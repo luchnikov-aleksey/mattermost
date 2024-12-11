@@ -1248,6 +1248,11 @@ func (a *App) removeGetAnalyticsPermissionMigration() (permissionsMap, error) {
 		On:     permissionExists(model.PermissionSysconsoleReadUserManagementUsers.Id),
 		Remove: []string{model.PermissionGetAnalytics.Id},
 	})
+
+	transformations = append(transformations, permissionTransformation{
+		On:  permissionExists(model.PermissionSysconsoleReadReportingTeamStatistics.Id),
+		Add: []string{model.PermissionGetAnalytics.Id},
+	})
 	return transformations, nil
 }
 
