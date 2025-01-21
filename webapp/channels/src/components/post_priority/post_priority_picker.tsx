@@ -253,7 +253,6 @@ function PostPriorityPicker({
                 isMenuOpen: pickerOpen,
             }}
             menuButtonTooltip={{
-                id: 'postPriorityPickerOverlayTooltip',
                 text: messagePriority,
             }}
             menuHeader={
@@ -269,13 +268,14 @@ function PostPriorityPicker({
             }
             anchorOrigin={{
                 vertical: 'top',
-                horizontal: 'center',
+                horizontal: 'left',
             }}
             transformOrigin={{
                 vertical: 'bottom',
-                horizontal: 'center',
+                horizontal: 'left',
             }}
             menuFooter={footer}
+            closeMenuOnTab={false}
         >
             {
                 [...menuItems, ...menuCheckboxItems]
