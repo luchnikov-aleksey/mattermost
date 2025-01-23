@@ -438,11 +438,8 @@ var (
 func (th *TestHelper) InitLogin() *TestHelper {
 	th.waitForConnectivity()
 
-	var ranInit bool
-
 	// create users once and cache them because password hashing is slow
 	initBasicOnce.Do(func() {
-		ranInit = true
 		var err *model.AppError
 
 		th.SystemAdminUser = th.CreateUser()
@@ -492,11 +489,7 @@ func (th *TestHelper) InitLogin() *TestHelper {
 	th.BasicUser = userCache.BasicUser.DeepCopy()
 	th.BasicUser2 = userCache.BasicUser2.DeepCopy()
 
-	if !ranInit {
-		if appErr := th.Store.User().InsertUsers([]*model.User{th.SystemAdminUser, th.TeamAdminUser, th.BasicUser, th.BasicUser2, th.SystemManagerUser}); appErr != nil {
-			panic(appErr)
-		}
-	}
+	th.Store.User().InsertUsers([]*model.User{th.SystemAdminUser, th.TeamAdminUser, th.BasicUser, th.BasicUser2, th.SystemManagerUser})
 
 	// restore non hashed password for login
 	th.SystemAdminUser.Password = "Pa$$word11"
