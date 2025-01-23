@@ -41,6 +41,7 @@ type TestHelper struct {
 	App         *app.App
 	Server      *app.Server
 	ConfigStore *config.Store
+	Store       store.Store
 
 	Context              *request.Context
 	Client               *model.Client4
@@ -77,8 +78,9 @@ func SetMainHelper(mh *testlib.MainHelper) {
 	mainHelper = mh
 }
 
-func setupTestHelper(dbStore store.Store, searchEngine *searchengine.Broker, enterprise bool, includeCache bool,
-	updateConfig func(*model.Config), options []app.Option) *TestHelper {
+func setupTestHelper(dbStore store.Store, sqlSettings *model.SqlSettings, searchEngine *searchengine.Broker, enterprise bool, includeCache bool,
+	updateConfig func(*model.Config), options []app.Option,
+) *TestHelper {
 	tempWorkspace, err := os.MkdirTemp("", "apptest")
 	if err != nil {
 		panic(err)
@@ -90,7 +92,7 @@ func setupTestHelper(dbStore store.Store, searchEngine *searchengine.Broker, ent
 	}
 
 	memoryConfig := &model.Config{
-		SqlSettings: *mainHelper.GetSQLSettings(),
+		SqlSettings: model.SafeDereference(sqlSettings),
 	}
 	memoryConfig.SetDefaults()
 	*memoryConfig.PluginSettings.Directory = filepath.Join(tempWorkspace, "plugins")
@@ -103,7 +105,7 @@ func setupTestHelper(dbStore store.Store, searchEngine *searchengine.Broker, ent
 	*memoryConfig.AnnouncementSettings.UserNoticesEnabled = false
 	*memoryConfig.PluginSettings.AutomaticPrepackagedPlugins = false
 	// Enabling Redis with Postgres.
-	if *memoryConfig.SqlSettings.DriverName == model.DatabaseDriverPostgres {
+	if *memoryConfig.SqlSettings.DriverName == model.DatabaseDriverPostgres && !mainHelper.Options.RunParallel {
 		*memoryConfig.CacheSettings.CacheType = model.CacheTypeRedis
 		redisHost := "localhost"
 		if os.Getenv("IS_CI") == "true" {
@@ -159,6 +161,7 @@ func setupTestHelper(dbStore store.Store, searchEngine *searchengine.Broker, ent
 		IncludeCacheLayer: includeCache,
 		TestLogger:        testLogger,
 		LogBuffer:         buffer,
+		Store:             dbStore,
 	}
 
 	if s.Platform().SearchEngine != nil && s.Platform().SearchEngine.BleveEngine != nil && searchEngine != nil {
@@ -205,7 +208,6 @@ func setupTestHelper(dbStore store.Store, searchEngine *searchengine.Broker, ent
 	th.SystemManagerClient = th.CreateClient()
 
 	// Verify handling of the supported true/false values by randomizing on each run.
-	rand.Seed(time.Now().UTC().UnixNano())
 	trueValues := []string{"1", "t", "T", "TRUE", "true", "True"}
 	falseValues := []string{"0", "f", "F", "FALSE", "false", "False"}
 	trueString := trueValues[rand.Intn(len(trueValues))]
@@ -233,6 +235,27 @@ func getLicense(enterprise bool, cfg *model.Config) *model.License {
 	return nil
 }
 
+func setupStores(tb testing.TB) (store.Store, *model.SqlSettings, *searchengine.Broker) {
+	var dbStore store.Store
+	var dbSettings *model.SqlSettings
+	var searchEngine *searchengine.Broker
+	if mainHelper.Options.RunParallel {
+		dbStore, dbSettings, searchEngine = mainHelper.GetNewStore(tb, false)
+		tb.Cleanup(func() {
+			dbStore.Close()
+		})
+	} else {
+		dbStore = mainHelper.GetStore()
+		dbStore.DropAllTables()
+		dbStore.MarkSystemRanUnitTests()
+		mainHelper.PreloadMigrations()
+		searchEngine = mainHelper.GetSearchEngine()
+		dbSettings = mainHelper.Settings
+	}
+
+	return dbStore, dbSettings, searchEngine
+}
+
 func SetupEnterprise(tb testing.TB, options ...app.Option) *TestHelper {
 	if testing.Short() {
 		tb.SkipNow()
@@ -242,13 +265,10 @@ func SetupEnterprise(tb testing.TB, options ...app.Option) *TestHelper {
 		tb.SkipNow()
 	}
 
-	dbStore := mainHelper.GetStore()
-	dbStore.DropAllTables()
-	dbStore.MarkSystemRanUnitTests()
-	mainHelper.PreloadMigrations()
-	searchEngine := mainHelper.GetSearchEngine()
-	th := setupTestHelper(dbStore, searchEngine, true, true, nil, options)
+	dbStore, dbSettings, searchEngine := setupStores(tb)
+	th := setupTestHelper(dbStore, dbSettings, searchEngine, true, true, nil, options)
 	th.InitLogin()
+
 	return th
 }
 
@@ -261,13 +281,10 @@ func Setup(tb testing.TB) *TestHelper {
 		tb.SkipNow()
 	}
 
-	dbStore := mainHelper.GetStore()
-	dbStore.DropAllTables()
-	dbStore.MarkSystemRanUnitTests()
-	mainHelper.PreloadMigrations()
-	searchEngine := mainHelper.GetSearchEngine()
-	th := setupTestHelper(dbStore, searchEngine, false, true, nil, nil)
+	dbStore, dbSettings, searchEngine := setupStores(tb)
+	th := setupTestHelper(dbStore, dbSettings, searchEngine, false, true, nil, nil)
 	th.InitLogin()
+
 	return th
 }
 
@@ -280,14 +297,11 @@ func SetupAndApplyConfigBeforeLogin(tb testing.TB, updateConfig func(cfg *model.
 		tb.SkipNow()
 	}
 
-	dbStore := mainHelper.GetStore()
-	dbStore.DropAllTables()
-	dbStore.MarkSystemRanUnitTests()
-	mainHelper.PreloadMigrations()
-	searchEngine := mainHelper.GetSearchEngine()
-	th := setupTestHelper(dbStore, searchEngine, false, true, nil, nil)
+	dbStore, dbSettings, searchEngine := setupStores(tb)
+	th := setupTestHelper(dbStore, dbSettings, searchEngine, false, true, nil, nil)
 	th.App.UpdateConfig(updateConfig)
 	th.InitLogin()
+
 	return th
 }
 
@@ -300,18 +314,15 @@ func SetupConfig(tb testing.TB, updateConfig func(cfg *model.Config)) *TestHelpe
 		tb.SkipNow()
 	}
 
-	dbStore := mainHelper.GetStore()
-	dbStore.DropAllTables()
-	dbStore.MarkSystemRanUnitTests()
-	mainHelper.PreloadMigrations()
-	searchEngine := mainHelper.GetSearchEngine()
-	th := setupTestHelper(dbStore, searchEngine, false, true, updateConfig, nil)
+	dbStore, dbSettings, searchEngine := setupStores(tb)
+	th := setupTestHelper(dbStore, dbSettings, searchEngine, false, true, updateConfig, nil)
 	th.InitLogin()
+
 	return th
 }
 
 func SetupConfigWithStoreMock(tb testing.TB, updateConfig func(cfg *model.Config)) *TestHelper {
-	th := setupTestHelper(testlib.GetMockStoreForSetupFunctions(), nil, false, false, updateConfig, nil)
+	th := setupTestHelper(testlib.GetMockStoreForSetupFunctions(), nil, nil, false, false, updateConfig, nil)
 	statusMock := mocks.StatusStore{}
 	statusMock.On("UpdateExpiredDNDStatuses").Return([]*model.Status{}, nil)
 	statusMock.On("Get", "user1").Return(&model.Status{UserId: "user1", Status: model.StatusOnline}, nil)
@@ -325,7 +336,7 @@ func SetupConfigWithStoreMock(tb testing.TB, updateConfig func(cfg *model.Config
 }
 
 func SetupWithStoreMock(tb testing.TB) *TestHelper {
-	th := setupTestHelper(testlib.GetMockStoreForSetupFunctions(), nil, false, false, nil, nil)
+	th := setupTestHelper(testlib.GetMockStoreForSetupFunctions(), nil, nil, false, false, nil, nil)
 	statusMock := mocks.StatusStore{}
 	statusMock.On("UpdateExpiredDNDStatuses").Return([]*model.Status{}, nil)
 	statusMock.On("Get", "user1").Return(&model.Status{UserId: "user1", Status: model.StatusOnline}, nil)
@@ -339,7 +350,7 @@ func SetupWithStoreMock(tb testing.TB) *TestHelper {
 }
 
 func SetupEnterpriseWithStoreMock(tb testing.TB, options ...app.Option) *TestHelper {
-	th := setupTestHelper(testlib.GetMockStoreForSetupFunctions(), nil, true, false, nil, options)
+	th := setupTestHelper(testlib.GetMockStoreForSetupFunctions(), nil, nil, true, false, nil, options)
 	statusMock := mocks.StatusStore{}
 	statusMock.On("UpdateExpiredDNDStatuses").Return([]*model.Status{}, nil)
 	statusMock.On("Get", "user1").Return(&model.Status{UserId: "user1", Status: model.StatusOnline}, nil)
@@ -361,12 +372,8 @@ func SetupWithServerOptions(tb testing.TB, options []app.Option) *TestHelper {
 		tb.SkipNow()
 	}
 
-	dbStore := mainHelper.GetStore()
-	dbStore.DropAllTables()
-	dbStore.MarkSystemRanUnitTests()
-	mainHelper.PreloadMigrations()
-	searchEngine := mainHelper.GetSearchEngine()
-	th := setupTestHelper(dbStore, searchEngine, false, true, nil, options)
+	dbStore, dbSettings, searchEngine := setupStores(tb)
+	th := setupTestHelper(dbStore, dbSettings, searchEngine, false, true, nil, options)
 	th.InitLogin()
 	return th
 }
@@ -380,12 +387,8 @@ func SetupEnterpriseWithServerOptions(tb testing.TB, options []app.Option) *Test
 		tb.SkipNow()
 	}
 
-	dbStore := mainHelper.GetStore()
-	dbStore.DropAllTables()
-	dbStore.MarkSystemRanUnitTests()
-	mainHelper.PreloadMigrations()
-	searchEngine := mainHelper.GetSearchEngine()
-	th := setupTestHelper(dbStore, searchEngine, true, true, nil, options)
+	dbStore, dbSettings, searchEngine := setupStores(tb)
+	th := setupTestHelper(dbStore, dbSettings, searchEngine, true, true, nil, options)
 	th.InitLogin()
 	return th
 }
@@ -421,43 +424,67 @@ func closeBody(r *http.Response) {
 	}
 }
 
-var initBasicOnce sync.Once
-var userCache struct {
-	SystemAdminUser   *model.User
-	SystemManagerUser *model.User
-	TeamAdminUser     *model.User
-	BasicUser         *model.User
-	BasicUser2        *model.User
-}
+var (
+	initBasicOnce sync.Once
+	userCache     struct {
+		SystemAdminUser   *model.User
+		SystemManagerUser *model.User
+		TeamAdminUser     *model.User
+		BasicUser         *model.User
+		BasicUser2        *model.User
+	}
+)
 
 func (th *TestHelper) InitLogin() *TestHelper {
 	th.waitForConnectivity()
 
+	var ranInit bool
+
 	// create users once and cache them because password hashing is slow
 	initBasicOnce.Do(func() {
+		ranInit = true
+		var err *model.AppError
+
 		th.SystemAdminUser = th.CreateUser()
 		th.App.UpdateUserRoles(th.Context, th.SystemAdminUser.Id, model.SystemUserRoleId+" "+model.SystemAdminRoleId, false)
-		th.SystemAdminUser, _ = th.App.GetUser(th.SystemAdminUser.Id)
+		th.SystemAdminUser, err = th.App.GetUser(th.SystemAdminUser.Id)
+		if err != nil {
+			panic(err)
+		}
 		userCache.SystemAdminUser = th.SystemAdminUser.DeepCopy()
 
 		th.SystemManagerUser = th.CreateUser()
 		th.App.UpdateUserRoles(th.Context, th.SystemManagerUser.Id, model.SystemUserRoleId+" "+model.SystemManagerRoleId, false)
-		th.SystemManagerUser, _ = th.App.GetUser(th.SystemManagerUser.Id)
+		th.SystemManagerUser, err = th.App.GetUser(th.SystemManagerUser.Id)
+		if err != nil {
+			panic(err)
+		}
 		userCache.SystemManagerUser = th.SystemManagerUser.DeepCopy()
 
 		th.TeamAdminUser = th.CreateUser()
 		th.App.UpdateUserRoles(th.Context, th.TeamAdminUser.Id, model.SystemUserRoleId, false)
-		th.TeamAdminUser, _ = th.App.GetUser(th.TeamAdminUser.Id)
+		th.TeamAdminUser, err = th.App.GetUser(th.TeamAdminUser.Id)
+		if err != nil {
+			panic(err)
+		}
 		userCache.TeamAdminUser = th.TeamAdminUser.DeepCopy()
 
 		th.BasicUser = th.CreateUser()
-		th.BasicUser, _ = th.App.GetUser(th.BasicUser.Id)
+		th.BasicUser, err = th.App.GetUser(th.BasicUser.Id)
+		if err != nil {
+			panic(err)
+		}
+
 		userCache.BasicUser = th.BasicUser.DeepCopy()
 
 		th.BasicUser2 = th.CreateUser()
-		th.BasicUser2, _ = th.App.GetUser(th.BasicUser2.Id)
+		th.BasicUser2, err = th.App.GetUser(th.BasicUser2.Id)
+		if err != nil {
+			panic(err)
+		}
 		userCache.BasicUser2 = th.BasicUser2.DeepCopy()
 	})
+
 	// restore cached users
 	th.SystemAdminUser = userCache.SystemAdminUser.DeepCopy()
 	th.SystemManagerUser = userCache.SystemManagerUser.DeepCopy()
@@ -465,8 +492,11 @@ func (th *TestHelper) InitLogin() *TestHelper {
 	th.BasicUser = userCache.BasicUser.DeepCopy()
 	th.BasicUser2 = userCache.BasicUser2.DeepCopy()
 
-	users := []*model.User{th.SystemAdminUser, th.TeamAdminUser, th.BasicUser, th.BasicUser2, th.SystemManagerUser}
-	mainHelper.GetSQLStore().User().InsertUsers(users)
+	if !ranInit {
+		if appErr := th.Store.User().InsertUsers([]*model.User{th.SystemAdminUser, th.TeamAdminUser, th.BasicUser, th.BasicUser2, th.SystemManagerUser}); appErr != nil {
+			panic(appErr)
+		}
+	}
 
 	// restore non hashed password for login
 	th.SystemAdminUser.Password = "Pa$$word11"
@@ -485,7 +515,9 @@ func (th *TestHelper) InitLogin() *TestHelper {
 		th.LoginTeamAdmin()
 		wg.Done()
 	}()
+
 	wg.Wait()
+
 	return th
 }
 
@@ -877,7 +909,6 @@ func (th *TestHelper) CreateMessagePostNoClient(channel *model.Channel, message 
 		Message:   message,
 		CreateAt:  createAtTime,
 	})
-
 	if err != nil {
 		panic(err)
 	}
